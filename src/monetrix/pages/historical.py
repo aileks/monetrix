@@ -1,3 +1,4 @@
+# src/monetrix/pages/historical.py
 import os
 from datetime import date, timedelta
 
@@ -8,35 +9,34 @@ from monetrix.api_clients.fmp_client import get_historical_price_data
 
 API_KEY = os.getenv("FMP_API_KEY")
 
+# Define a list of common tickers (same as in quote.py)
+COMMON_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JPM", "V"]
+
 st.title("Historical Stock Data")
 
 
-def set_date_range(days: int = 0, weeks: int = 0, months: int = 0, years: int = 0):
+def set_date_range(
+    days: int = 0, weeks: int = 0, months: int = 0, years: int = 0
+) -> None:
     """Updates session state for start and end dates based on offset."""
     today = date.today()
     start_offset = timedelta(days=days, weeks=weeks)
-    # Use relativedelta for months/years if more precision is needed,
-    # but timedelta is simpler for approximate ranges.
     if months > 0:
         start_offset = timedelta(days=months * 30)
     if years > 0:
         start_offset = timedelta(days=years * 365)
 
     new_start_date = today - start_offset
-    # Ensure start date is not today or later
     if new_start_date >= today:
         new_start_date = today - timedelta(days=1)
 
     st.session_state.hist_start_date = new_start_date
     st.session_state.hist_end_date = today
-    # Optional: Trigger a rerun if needed immediately after setting state,
-    # although changing widget state often does this automatically.
-    # st.rerun()
 
 
 today = date.today()
 if "hist_start_date" not in st.session_state:
-    st.session_state.hist_start_date = today - timedelta(days=365)  # Default 1 year
+    st.session_state.hist_start_date = today - timedelta(days=365)
 if "hist_end_date" not in st.session_state:
     st.session_state.hist_end_date = today
 
@@ -45,9 +45,19 @@ if not API_KEY:
     st.stop()
 
 st.sidebar.header("Historical Data Input")
-symbol_input_hist = st.sidebar.text_input(
-    "Enter Stock Symbol:", value="AAPL", key="hist_symbol_input"
+
+# TODO: Consider extracting this logic
+default_index = COMMON_TICKERS.index("AAPL") if "AAPL" in COMMON_TICKERS else 0
+symbol_input_hist = st.sidebar.selectbox(
+    "Select stock symbol:",
+    options=COMMON_TICKERS,
+    index=default_index,  # Set a default selection
+    key="hist_symbol_select",  # Use unique key
+)
+custom_symbol = st.sidebar.text_input(
+    "Or enter a custom symbol:", key="hist_custom_symbol"
 ).upper()
+symbol_to_use = custom_symbol if custom_symbol else symbol_input_hist
 
 start_date_input = st.sidebar.date_input(
     "Start Date",
@@ -63,7 +73,6 @@ end_date_input = st.sidebar.date_input(
 
 st.sidebar.markdown("Set Date Range:")
 cols = st.sidebar.columns([1, 1, 1])
-# Note: Using callbacks (on_click) is generally cleaner
 cols[0].button(
     "1M",
     on_click=set_date_range,
@@ -101,10 +110,17 @@ cols[1].button(
     key="date_5y",
     use_container_width=True,
 )
+cols[2].button(
+    "10Y",
+    on_click=set_date_range,
+    kwargs=dict(years=10),
+    key="date_10y",
+    use_container_width=True,
+)
 
 fetch_button_hist = st.sidebar.button("Get Historical Data", key="hist_fetch_button")
 
-st.header(f"{symbol_input_hist}")
+st.header(f"{symbol_to_use}")  # Display the selected symbol
 st.caption(
     f"Date Range: {st.session_state.hist_start_date.strftime('%Y-%m-%d')} to {st.session_state.hist_end_date.strftime('%Y-%m-%d')}"
 )
@@ -113,21 +129,21 @@ if fetch_button_hist:
     current_start = st.session_state.hist_start_date
     current_end = st.session_state.hist_end_date
 
-    if not symbol_input_hist:
-        st.warning("Please enter a stock symbol.")
+    if not symbol_to_use:
+        st.warning("Please select or enter a stock symbol.")
     elif current_start >= current_end:
         st.warning("Error: Start date must be before end date.")
     else:
-        with st.spinner(f"Fetching historical data for {symbol_input_hist}..."):
-            hist_data = get_historical_price_data(
-                symbol_input_hist, API_KEY, current_start, current_end
+        with st.spinner(f"Fetching historical data for {symbol_to_use}..."):
+            # Pass the selected symbol to the API function
+            hist_data = get_historical_price_data(  #
+                symbol_to_use, API_KEY, current_start, current_end
             )
 
-        # (Rest of the data display logic remains the same...)
         if hist_data is not None:
             if not hist_data.empty:
                 fig = px.line(
-                    hist_data, y="close", title=f"{symbol_input_hist} Closing Price"
+                    hist_data, y="close", title=f"{symbol_to_use} Closing Price"
                 )
                 fig.update_layout(xaxis_title="Date", yaxis_title="Closing Price (USD)")
                 st.plotly_chart(fig, use_container_width=True)
@@ -135,11 +151,11 @@ if fetch_button_hist:
                     st.dataframe(hist_data)
             else:
                 st.warning(
-                    f"No historical data returned for {symbol_input_hist} in the selected date range."
+                    f"No historical data returned for {symbol_to_use} in the selected date range."
                 )
         else:
-            st.error(f"Could not retrieve historical data for {symbol_input_hist}.")
+            st.error(f"Could not retrieve historical data for {symbol_to_use}.")
 else:
     st.info(
-        "Enter symbol, select dates or use presets, then click 'Get Historical Data'."
+        "Select symbol, adjust dates or use presets, then click 'Get Historical Data'."
     )
