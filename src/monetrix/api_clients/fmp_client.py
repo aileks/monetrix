@@ -142,7 +142,7 @@ def get_historical_price_data(
 
 
 @st.cache_data(ttl=600)
-def get_market_gainers(api_key: str) -> list[dict[str, Any]] | None:
+def get_market_winners(api_key: str) -> list[dict[str, Any]] | None:
     """
     Fetches the top stock market gainers from the FMP API.
 

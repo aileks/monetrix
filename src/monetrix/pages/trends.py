@@ -4,8 +4,8 @@ import pandas as pd
 import streamlit as st
 
 from monetrix.api_clients.fmp_client import (
-    get_market_gainers,
     get_market_losers,
+    get_market_winners,
 )
 
 API_KEY = os.getenv("FMP_API_KEY")
@@ -22,25 +22,25 @@ gainer_placeholder = st.empty()
 loser_placeholder = st.empty()
 
 with st.spinner("Fetching market movers data..."):
-    gainers_data = get_market_gainers(API_KEY)
+    winners_data = get_market_winners(API_KEY)
     losers_data = get_market_losers(API_KEY)
 
-# --- Display Top 10 Gainers ---
+# --- Display Top 10 winners ---
 with gainer_placeholder.container():
-    st.header("Top 10 Gainers 📈")
-    if gainers_data:
-        df_gainers = pd.DataFrame(gainers_data)
+    st.header("Top Winners 📈")
+    if winners_data:
+        df_winners = pd.DataFrame(winners_data)
 
         # Limit to top 10 and select/rename columns
-        df_gainers_display = df_gainers.head(10)[
+        df_winners_display = df_winners.head(10)[
             ["symbol", "name", "price", "changesPercentage"]
         ]
-        df_gainers_display = df_gainers_display.rename(
+        df_winners_display = df_winners_display.rename(
             columns={"changesPercentage": "% Change"}  # type: ignore
         )
 
         st.dataframe(
-            df_gainers_display,
+            df_winners_display,
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -50,15 +50,15 @@ with gainer_placeholder.container():
                 ),  # Add '+' sign
             },
         )
-    elif gainers_data == []:
+    elif not winners_data:
         st.info("No gainer data returned by the API for today.")
     else:
-        st.error("Could not retrieve top gainers data.")
+        st.error("Could not retrieve top winners data.")
 
 st.divider()
 
 with loser_placeholder.container():
-    st.header("Top 10 Losers 📉")
+    st.header("Top Losers 📉")
     if losers_data:
         df_losers = pd.DataFrame(losers_data)
 
