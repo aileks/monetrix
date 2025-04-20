@@ -6,6 +6,7 @@ from monetrix.api_clients.fmp_client import get_stock_quote
 
 API_KEY = os.getenv("FMP_API_KEY")
 
+# Define a list of common tickers
 COMMON_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JPM", "V"]
 
 st.title("Stock Quote")
@@ -16,11 +17,9 @@ if not API_KEY:
     st.stop()
 
 st.sidebar.header("Quote Input")
-
-# TODO: Consider extracting this logic
-default_index = COMMON_TICKERS.index("AAPL") if "AAPL" in COMMON_TICKERS else 0
+default_index = COMMON_TICKERS.index("AAPL")
 symbol_input = st.sidebar.selectbox(
-    "Select stock symbol:",
+    "Select or Enter Stock Symbol:",
     options=COMMON_TICKERS,
     index=default_index,
     key="quote_symbol_select",
@@ -30,38 +29,54 @@ custom_symbol = st.sidebar.text_input(
 ).upper()
 symbol_to_use = custom_symbol if custom_symbol else symbol_input
 
-
 fetch_button = st.sidebar.button("Get Quote", key="quote_fetch_button")
 
-st.header(f"{symbol_to_use}")
+st.header(f"Quote for {symbol_to_use}")
 
 if fetch_button:
     if not symbol_to_use:
         st.warning("Please select or enter a stock symbol.")
     else:
         with st.spinner(f"Fetching quote for {symbol_to_use}..."):
-            # Pass the selected/entered symbol to the API function
             quote_data = get_stock_quote(symbol_to_use, API_KEY)  #
 
         if quote_data:
-            # Display key metrics
-            price, day_low, day_high, vol = st.columns(4)
+            price_col, pe_col, low_col, high_col, vol_col = st.columns(5)
+
+            # Extract data with .get() for safety
             price_quote = quote_data.get("price")
             change = quote_data.get("change", 0)
             percent_change = quote_data.get("changesPercentage", 0)
+            pe_ratio = quote_data.get("pe")
+            day_low = quote_data.get("dayLow")
+            day_high = quote_data.get("dayHigh")
+            volume = quote_data.get("volume")
 
-            price.metric(
+            price_col.metric(
                 "Price",
                 f"${price_quote:,.2f}" if price_quote is not None else "N/A",
                 (
                     f"{change:,.2f} ({percent_change:.2f}%)"
                     if price_quote is not None
+                    and change is not None
+                    and percent_change is not None
                     else ""
                 ),
             )
-            day_low.metric("Day Low", f"${quote_data.get('dayLow', 'N/A'):,.2f}")
-            day_high.metric("Day High", f"${quote_data.get('dayHigh', 'N/A'):,.2f}")
-            vol.metric("Volume", f"{quote_data.get('volume', 'N/A'):,}")
+
+            pe_col.metric(
+                "P/E Ratio",
+                f"{pe_ratio:.2f}" if pe_ratio is not None else "N/A",
+            )
+
+            low_col.metric(
+                "Day Low", f"${day_low:,.2f}" if day_low is not None else "N/A"
+            )
+            high_col.metric(
+                "Day High", f"${day_high:,.2f}" if day_high is not None else "N/A"
+            )
+
+            vol_col.metric("Volume", f"{volume:,}" if volume is not None else "N/A")
 
             with st.expander("View Raw JSON Data"):
                 st.json(quote_data)
