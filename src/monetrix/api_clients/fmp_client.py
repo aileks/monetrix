@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -6,6 +7,7 @@ import requests
 import streamlit as st
 
 
+@st.cache_data(ttl=900)
 def get_stock_quote(symbol: str, api_key: str) -> dict[str, Any] | None:
     """
     Fetches the stock quote for a given symbol from the FMP API.
@@ -52,15 +54,16 @@ def get_stock_quote(symbol: str, api_key: str) -> dict[str, Any] | None:
 
 @st.cache_data(ttl=3600)
 def get_historical_price_data(
-    symbol: str, api_key: str, years: int = 5
+    symbol: str, api_key: str, start_date: date, end_date: date
 ) -> pd.DataFrame | None:
     """
-    Fetches historical daily price data from FMP API for a given number of years.
+    Fetches historical daily price data from FMP API for a given date range.
 
     Args:
         symbol (str): The stock ticker symbol.
         api_key (str): The FMP API key.
-        years (int): Number of years of historical data to fetch. Max might be limited by API.
+        start_date (date): The start date for the historical data.
+        end_date (date): The end date for the historical data.
 
     Returns:
         Optional[pd.DataFrame]: DataFrame with historical data (date, open, high, low, close, volume),
@@ -72,36 +75,54 @@ def get_historical_price_data(
     if not symbol:
         print("Error: Stock symbol was not provided for historical data.")
         return None
+    if not start_date or not end_date:
+        print("Error: Start date or end date not provided.")
+        return None
 
-    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?apikey={api_key}"
+    start_date_str = start_date.strftime("%Y-%m-%d")
+    end_date_str = end_date.strftime("%Y-%m-%d")
+
+    # Construct URL using 'from' and 'to' parameters
+    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?from={start_date_str}&to={end_date_str}&apikey={api_key}"
+    print(f"Requesting URL: {url}")  # Print URL for debugging
 
     try:
         print(
-            f"Cache miss/fetch: Historical data for {symbol}"
-        )  # Add print for cache debug
+            f"Cache miss/fetch: Historical data for {symbol} ({start_date_str} to {end_date_str})"
+        )
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
 
-        # Check if data is in the expected format {'symbol': 'AAPL', 'historical': [...]}
         if (
             isinstance(data, dict)
             and "historical" in data
             and isinstance(data["historical"], list)
         ):
-            if not data["historical"]:  # Handle empty list case
-                st.warning(
-                    f"No historical data returned for {symbol}. Check symbol or API limits."
+            if not data["historical"]:
+                print(
+                    f"No historical data returned by API for {symbol} in range {start_date_str} to {end_date_str}."
                 )
-                return None
-
+                # Return empty DataFrame instead of None, easier to handle in UI
+                return pd.DataFrame()
             df = pd.DataFrame(data["historical"])
-            # Basic data cleaning and type conversion
             df["date"] = pd.to_datetime(df["date"])
             df = df.set_index("date")
-            # Select and rename columns for consistency if needed
-            # df = df[['open', 'high', 'low', 'close', 'volume']] # Ensure standard columns
             df = df.sort_index()
+            # Ensure standard columns exist, fill missing numerics with 0 or NaN if preferred
+            for col in ["open", "high", "low", "close", "volume"]:
+                if col not in df.columns:
+                    df[col] = 0  # Or pd.NA
+            # Reorder columns if desired
+            df = df[
+                ["open", "high", "low", "close", "volume"]
+                + [
+                    c
+                    for c in df.columns
+                    if c not in ["open", "high", "low", "close", "volume"]
+                ]
+            ]
+
             return df
         else:
             print(f"Unexpected historical data format for {symbol}: {data}")
@@ -109,10 +130,17 @@ def get_historical_price_data(
 
     except requests.exceptions.RequestException as e:
         print(f"Error fetching historical data for {symbol}: {e}")
+        # Attempt to print error response from API if possible
+        try:
+            print(f"API Error Response: {response.text}")  # type: ignore
+        except:
+            pass  # Ignore if response object doesn't exist
         return None
     except json.JSONDecodeError:
-        print(f"Error decoding historical JSON for {symbol}. Response: {response.text}")  # type: ignore
+        print(
+            f"Error decoding historical JSON for {symbol}. Response: {response.text}"  # type: ignore
+        )
         return None
-    except Exception as e:  # Catch potential pandas errors
+    except Exception as e:
         print(f"Error processing historical data for {symbol}: {e}")
         return None

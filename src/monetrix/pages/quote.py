@@ -1,11 +1,8 @@
 import os
 
 import streamlit as st
-from dotenv import load_dotenv
 
 from monetrix.api_clients.fmp_client import get_stock_quote
-
-load_dotenv()
 
 API_KEY = os.getenv("FMP_API_KEY")
 
