@@ -120,7 +120,7 @@ cols[2].button(
 
 fetch_button_hist = st.sidebar.button("Get Historical Data", key="hist_fetch_button")
 
-st.header(f"{symbol_to_use}")  # Display the selected symbol
+st.header(f"{symbol_to_use}")
 st.caption(
     f"Date Range: {st.session_state.hist_start_date.strftime('%Y-%m-%d')} to {st.session_state.hist_end_date.strftime('%Y-%m-%d')}"
 )
