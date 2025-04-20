@@ -9,16 +9,7 @@ import streamlit as st
 
 @st.cache_data(ttl=900)
 def get_stock_quote(symbol: str, api_key: str) -> dict[str, Any] | None:
-    """
-    Fetches the stock quote for a given symbol from the FMP API.
-
-    Args:
-        symbol (str): The stock ticker symbol (e.g., 'AAPL').
-        api_key (str): The FMP API key.
-
-    Returns:
-        dict: A dictionary containing the quote data, or None if an error occurs.
-    """
+    """Fetches the stock quote for a given symbol from the FMP API."""
     if not api_key:
         print("Error: API key was not provided to get_stock_quote.")
         return None
@@ -55,20 +46,8 @@ def get_stock_quote(symbol: str, api_key: str) -> dict[str, Any] | None:
 @st.cache_data(ttl=3600)
 def get_historical_price_data(
     symbol: str, api_key: str, start_date: date, end_date: date
-) -> Optional[pd.DataFrame] | Optional[pd.Series]:
-    """
-    Fetches historical daily price data from FMP API for a given date range.
-
-    Args:
-        symbol (str): The stock ticker symbol.
-        api_key (str): The FMP API key.
-        start_date (date): The start date for the historical data.
-        end_date (date): The end date for the historical data.
-
-    Returns:
-        Optional[pd.DataFrame]: DataFrame with historical data (date, open, high, low, close, volume),
-                                 or None if an error occurs.
-    """
+) -> Optional[pd.DataFrame | pd.Series]:
+    """Fetches historical daily price data from FMP API for a given date range."""
     if not api_key:
         print("Error: API key was not provided for historical data.")
         return None
@@ -143,16 +122,7 @@ def get_historical_price_data(
 
 @st.cache_data(ttl=600)
 def get_market_winners(api_key: str) -> list[dict[str, Any]] | None:
-    """
-    Fetches the top stock market gainers from the FMP API.
-
-    Args:
-        api_key (str): The FMP API key.
-
-    Returns:
-        List[dict]: A list of dictionaries, each representing a top gainer,
-                    or None if an error occurs.
-    """
+    """Fetches the top stock market gainers from the FMP API."""
     if not api_key:
         print("Error: API key was not provided for market gainers.")
         return None
@@ -181,16 +151,7 @@ def get_market_winners(api_key: str) -> list[dict[str, Any]] | None:
 
 @st.cache_data(ttl=600)  # Cache for 10 minutes
 def get_market_losers(api_key: str) -> list[dict[str, Any]] | None:
-    """
-    Fetches the top stock market losers from the FMP API.
-
-    Args:
-        api_key (str): The FMP API key.
-
-    Returns:
-        List[dict]: A list of dictionaries, each representing a top loser,
-                    or None if an error occurs.
-    """
+    """Fetches the top stock market losers from the FMP API."""
     if not api_key:
         print("Error: API key was not provided for market losers.")
         return None
@@ -216,4 +177,85 @@ def get_market_losers(api_key: str) -> list[dict[str, Any]] | None:
     except json.JSONDecodeError:
         print("Error decoding JSON response for market losers.")
         print(f"Response text: {response.text}")  # type: ignore
+        return None
+
+
+@st.cache_data(ttl=3600)
+def get_technical_indicator(
+    api_key: str,
+    symbol: str,
+    period: int,
+    indicator_type: str,  # 'sma', 'ema', 'rsi', etc.
+    timeframe: str = "daily",  # FMP also supports intraday like '1min', '5min', '1hour', etc.
+) -> Optional[pd.Series | pd.DataFrame]:
+    """Fetches specified technical indicator data from FMP API."""
+    if not all([api_key, symbol, period, indicator_type]):
+        print("Error: Missing required parameters for get_technical_indicator.")
+        return None
+
+    api_timeframe = timeframe if timeframe != "1day" else "daily"
+    url = f"https://financialmodelingprep.com/api/v3/technical_indicator/{api_timeframe}/{symbol}?period={period}&type={indicator_type}&apikey={api_key}"
+
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        if isinstance(data, list) and len(data) > 0:
+            df = pd.DataFrame(data)
+            # Ensure 'date' column exists
+            if "date" not in df.columns:
+                print(
+                    f"Error: 'date' column missing in indicator response for {symbol} {indicator_type}"
+                )
+                return None
+
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.set_index("date")
+            df = df.sort_index()
+
+            # Find the indicator column (could be 'sma', 'ema', 'rsi')
+            indicator_col_name = indicator_type.lower()
+            if indicator_col_name not in df.columns:
+                # Sometimes the column name matches the type exactly
+                if indicator_type in df.columns:
+                    indicator_col_name = indicator_type
+                else:  # Try finding the first column that isn't date/open/high/low/close/volume if name mismatch
+                    potential_cols = [
+                        c
+                        for c in df.columns
+                        if c not in ["open", "high", "low", "close", "volume"]
+                    ]
+                    if potential_cols:
+                        indicator_col_name = potential_cols[0]
+                    else:
+                        print(
+                            f"Error: Indicator column ('{indicator_type.lower()}') not found in response for {symbol}"
+                        )
+                        return None
+
+            return df[indicator_col_name]
+        elif isinstance(data, list) and len(data) == 0:
+            print(
+                f"No indicator data returned for {symbol} {indicator_type} period {period}"
+            )
+            return None  # Return None for empty list
+        else:
+            print(
+                f"Warning: Unexpected response format for {symbol} indicator {indicator_type}: {data}"
+            )
+            return None
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching indicator {indicator_type} for {symbol}: {e}")
+        try:
+            print(f"API Error Response: {response.text}")  # type: ignore
+        except:  # noqa: E722
+            pass
+        return None
+    except json.JSONDecodeError:
+        print(f"Error decoding indicator JSON for {symbol} {indicator_type}. Response: {response.text}")  # type: ignore
+        return None
+    except Exception as e:
+        print(f"Error processing indicator data for {symbol} {indicator_type}: {e}")
         return None
