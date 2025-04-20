@@ -51,7 +51,7 @@ if compare_button:
         )
         valid_input = False
     elif len(final_symbols_list) > MAX_COMPARE:
-        # Use st.error for exceeding the hard limit
+        # Exceeded hard limit
         st.error(
             f"Too many unique stocks selected ({len(final_symbols_list)}). Please limit your combined input to {MAX_COMPARE} unique stocks."
         )

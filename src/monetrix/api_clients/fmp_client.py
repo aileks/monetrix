@@ -310,3 +310,95 @@ def get_multiple_stock_quotes(
     except Exception as e:
         print(f"Error processing multiple quotes data for {symbols_str}: {e}")
         return None
+
+
+@st.cache_data(ttl=3600)
+def get_forex_pairs_list(api_key: str) -> list[str] | None:
+    """Fetches the list of available Forex currency pairs from FMP API."""
+    if not api_key:
+        print("Error: API key not provided for Forex pairs list.")
+        return None
+
+    url = f"https://financialmodelingprep.com/api/v3/symbol/available-forex-currency-pairs?apikey={api_key}"
+
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        if (
+            isinstance(data, dict)
+            and "symbolsList" in data
+            and isinstance(data["symbolsList"], list)
+        ):
+            pairs = [
+                item.get("symbol") for item in data["symbolsList"] if item.get("symbol")
+            ]
+            return sorted(pairs)  # Return sorted list of symbols
+        # Handle alternative structure if API returns just a list of strings
+        elif isinstance(data, list) and all(isinstance(item, str) for item in data):
+            return sorted(data)
+        else:
+            print(f"Warning: Unexpected response format for Forex pairs list: {data}")
+            # Fallback if API is unavailable or format is wrong
+            return [
+                "EURUSD",
+                "USDJPY",
+                "GBPUSD",
+                "AUDUSD",
+                "USDCAD",
+                "USDCHF",
+                "NZDUSD",
+            ]
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching Forex pairs list: {e}")
+        return ["EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
+    except json.JSONDecodeError:
+        print(f"Error decoding JSON for Forex pairs list. Response: {response.text}")  # type: ignore
+        return ["EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
+    except Exception as e:
+        print(f"Generic error processing Forex pairs list: {e}")
+        return ["EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
+
+
+@st.cache_data(ttl=60)
+def get_forex_quote(api_key: str, pair: str) -> list[dict[str, Any]] | None:
+    """Fetches the latest quote for a specific Forex pair using the /api/v3/fx/ endpoint."""
+    if not api_key:
+        print("Error: API key not provided for Forex quote.")
+        return None
+    if not pair:
+        print("Error: Forex pair not provided.")
+        return None
+
+    url = f"https://financialmodelingprep.com/api/v3/fx/{pair}?apikey={api_key}"
+
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        # Expecting a list containing one quote dictionary
+        if isinstance(data, list) and len(data) > 0:
+            return data
+        elif isinstance(data, list) and len(data) == 0:
+            print(f"Empty list returned for Forex quote {pair}")
+            return None
+        else:
+            print(f"Warning: Unexpected response format for Forex quote {pair}: {data}")
+            return None
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching Forex quote for {pair}: {e}")
+        try:
+            print(f"API Error Response: {response.text}")  # type: ignore
+        except:
+            pass
+        return None
+    except json.JSONDecodeError:
+        print(f"Error decoding Forex quote JSON for {pair}. Response: {response.text}")  # type: ignore
+        return None
+    except Exception as e:
+        print(f"Error processing Forex quote data for {pair}: {e}")
+        return None
