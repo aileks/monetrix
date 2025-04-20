@@ -73,17 +73,7 @@ def get_historical_price_data(
         print("Error: Stock symbol was not provided for historical data.")
         return None
 
-    # Example: Using historical daily prices endpoint
-    # Check FMP docs for exact endpoint and parameters (e.g., date range vs. years)
-    # This endpoint might require specific date ranges or might be premium.
-    # Using '/v3/historical-price-full/{symbol}?serietype=line' often works for free tier limited history
-    # Let's try fetching daily data, limiting might be implicit in free tier
     url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?apikey={api_key}"
-    # Alternative if above needs date range:
-    # from datetime import date, timedelta
-    # today = date.today()
-    # start_date = today - timedelta(days=years*365)
-    # url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?from={start_date}&to={today}&apikey={api_key}"
 
     try:
         print(

@@ -4,13 +4,12 @@ import plotly.express as px
 import streamlit as st
 from dotenv import load_dotenv
 
-from ..api_clients.fmp_client import get_historical_price_data
+from monetrix.api_clients.fmp_client import get_historical_price_data
 
 load_dotenv()
 
 API_KEY = os.getenv("FMP_API_KEY")
 
-st.set_page_config(layout="wide", page_title="Monetrix • Historical Data")
 st.title("Historical Stock Data")
 
 if not API_KEY:
@@ -39,18 +38,16 @@ if fetch_button_hist:
             )
 
         if hist_data is not None and not hist_data.empty:
-            st.success(f"Data fetched successfully for {symbol_input_hist}!")
-
             # Create Plotly chart
             fig = px.line(
                 hist_data, y="close", title=f"{symbol_input_hist} Closing Price"
             )
             fig.update_layout(xaxis_title="Date", yaxis_title="Closing Price (USD)")
-            st.plotly_chart(fig, use_container_width=True)  # Display Plotly chart
+            st.plotly_chart(fig, use_container_width=True)
 
             # Display raw data in an expander
             with st.expander("View Historical Data Table"):
-                st.dataframe(hist_data)  # Display pandas DataFrame
+                st.dataframe(hist_data)
 
         elif hist_data is not None and hist_data.empty:
             st.warning(
@@ -62,7 +59,3 @@ if fetch_button_hist:
             )
 else:
     st.info("Enter a stock symbol, select years, and click 'Get Historical Data'.")
-
-
-st.sidebar.markdown("---")
-st.sidebar.caption("API limits apply. Data is cached.")

@@ -3,16 +3,14 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 
-from ..api_clients.fmp_client import get_stock_quote
+from monetrix.api_clients.fmp_client import get_stock_quote
 
 load_dotenv()
 
 API_KEY = os.getenv("FMP_API_KEY")
 
-st.set_page_config(layout="wide", page_title="Monetrix • Stock Quote")
 st.title("Stock Quote")
 
-# Check if API Key is loaded before proceeding
 if not API_KEY:
     st.error("Fatal Error: FMP_API_KEY not found in environment variables.")
     st.info("Ensure .env file is in the project root with FMP_API_KEY='YOUR_KEY'")
@@ -34,8 +32,6 @@ if fetch_button:
             quote_data = get_stock_quote(symbol_input, API_KEY)
 
         if quote_data:
-            st.success(f"Data fetched successfully for {symbol_input}!")
-
             # Display key metrics
             price, day_low, day_high, vol = st.columns(4)
             price_quote = quote_data.get("price")
@@ -63,6 +59,3 @@ if fetch_button:
             )
 else:
     st.info("Enter a stock symbol and click 'Get Quote'.")
-
-st.sidebar.markdown("---")
-st.sidebar.caption("API limits apply. Caching is recommended.")

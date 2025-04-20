@@ -1,20 +1,16 @@
 import streamlit as st
+from dotenv import load_dotenv
 
-st.set_page_config(page_title="Monetrix • Home", layout="wide")
+load_dotenv()
 
-st.title("Welcome to Monetrix!")
+st.set_page_config(page_title="Monetrix", layout="wide", initial_sidebar_state="auto")
 
-st.sidebar.header("Home")
-st.sidebar.info("Select a feature above.")
+pages = [
+    st.Page("pages/about.py", title="About", default=True),
+    st.Page("pages/quote.py", title="Stock Quote"),
+    st.Page("pages/historical.py", title="Historical Data"),
+]
 
-st.markdown(
-    """
-    Monetrix is a dashboard designed to visualize financial market data.
+pg = st.navigation(pages)
 
-    **👈 Select a feature from the sidebar** to get started!
-
-    ### Features:
-    - **Stock Quote:** Get real-time(ish) price quotes for individual stocks.
-    - **Historical Data:** View and chart historical price trends.
-    """
-)
+pg.run()
