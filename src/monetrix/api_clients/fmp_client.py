@@ -259,3 +259,54 @@ def get_technical_indicator(
     except Exception as e:
         print(f"Error processing indicator data for {symbol} {indicator_type}: {e}")
         return None
+
+
+@st.cache_data(ttl=600)
+def get_multiple_stock_quotes(
+    api_key: str, symbols: list[str]
+) -> list[dict[str, Any]] | None:
+    """Fetches stock quotes for multiple symbols in a single API call."""
+    if not api_key:
+        print("Error: API key not provided for multiple quotes.")
+        return None
+    if not symbols:
+        print("Error: No symbols provided for multiple quotes.")
+        return []  # Return empty list if no symbols given
+
+    # Join symbols into comma-separated string
+    symbols_str = ",".join(symbols).upper()
+    url = (
+        f"https://financialmodelingprep.com/api/v3/quote/{symbols_str}?apikey={api_key}"
+    )
+
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        # Expecting a list of quote objects
+        if isinstance(data, list):
+            return data
+        else:
+            print(
+                f"Warning: Unexpected response format for multiple quotes ({symbols_str}): {data}"
+            )
+
+            # If it returns a single dict for a single symbol, wrap it in a list
+            if isinstance(data, dict) and len(symbols) == 1:
+                return [data]
+            return None
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching multiple quotes for {symbols_str}: {e}")
+        try:
+            print(f"API Error Response: {response.text}")  # type: ignore
+        except:  # noqa: E722
+            pass
+        return None
+    except json.JSONDecodeError:
+        print(f"Error decoding multiple quotes JSON for {symbols_str}. Response: {response.text}")  # type: ignore
+        return None
+    except Exception as e:
+        print(f"Error processing multiple quotes data for {symbols_str}: {e}")
+        return None

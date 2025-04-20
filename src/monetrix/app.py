@@ -10,6 +10,7 @@ pages = [
     st.Page("pages/quote.py", title="Stock Quote"),
     st.Page("pages/historical.py", title="Historical Data"),
     st.Page("pages/trends.py", title="Market Trends"),
+    st.Page("pages/comparison.py", title="Stock Comparison"),
 ]
 
 pg = st.navigation(pages)

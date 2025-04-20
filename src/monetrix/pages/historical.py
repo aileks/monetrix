@@ -264,8 +264,10 @@ if fetch_button_hist:
                 )
 
                 # Add RSI horizontal lines
-                fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-                fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+                fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)  # type: ignore
+                fig.add_hline(
+                    y=30, line_dash="dash", line_color="green", row=2, col=1  # type: ignore
+                )
 
                 # Update layout
                 fig.update_layout(
