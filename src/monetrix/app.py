@@ -1,9 +1,16 @@
+from pathlib import Path
+
 import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
 
-st.set_page_config(page_title="Monetrix", layout="wide", initial_sidebar_state="auto")
+st.set_page_config(
+    page_title="Monetrix",
+    page_icon=Path(__file__).parent / "public/favicon.ico",
+    layout="wide",
+    initial_sidebar_state="auto",
+)
 
 pages = [
     st.Page("pages/about.py", title="About", default=True),

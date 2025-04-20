@@ -1,6 +1,6 @@
 import streamlit as st
 
-st.title("Welcome to Monetrix!")
+st.header("Welcome to Monetrix!")
 
 st.sidebar.info("Select a feature above.")
 
