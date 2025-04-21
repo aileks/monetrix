@@ -10,7 +10,7 @@ API_KEY = os.getenv("FMP_API_KEY")
 COMMON_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JPM", "V"]
 MAX_COMPARE = 5  # Set a max limit for comparison
 
-st.title("📊 Stock Comparison")
+st.title("Stock Comparison")
 
 if not API_KEY:
     st.error("Fatal Error: FMP_API_KEY not found in environment variables.")
