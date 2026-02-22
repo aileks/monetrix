@@ -1,25 +1,45 @@
-import os
 from datetime import datetime
 
 import streamlit as st
 
-from monetrix.api_clients.fmp_client import get_forex_pairs_list, get_forex_quote
+from monetrix.api_clients.fmp_client import (
+    format_api_error,
+    get_forex_pairs_list,
+    get_forex_quote,
+)
+from monetrix.config import resolve_fmp_api_key
 
-API_KEY = os.getenv("FMP_API_KEY")
+API_KEY = resolve_fmp_api_key()
+FALLBACK_FOREX_PAIRS = [
+    "EURUSD",
+    "USDJPY",
+    "GBPUSD",
+    "AUDUSD",
+    "USDCAD",
+    "USDCHF",
+    "NZDUSD",
+]
 
 st.title("Forex Rates")
 
 if not API_KEY:
-    st.error("Fatal Error: FMP_API_KEY not found in environment variables.")
-    st.info("Ensure .env file is in the project root with FMP_API_KEY='YOUR_KEY'")
+    st.error("Fatal Error: FMP_API_KEY not configured.")
+    st.info("Set Streamlit secret FMP_API_KEY (or fmp.api_key) or env var FMP_API_KEY.")
     st.stop()
 
 with st.spinner("Loading available Forex pairs..."):
-    forex_pairs = get_forex_pairs_list(API_KEY)
+    forex_pairs_result = get_forex_pairs_list(API_KEY)
 
-if not forex_pairs:
-    st.error("Could not load Forex pair list. Using fallback.")
-    forex_pairs = ["EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
+if forex_pairs_result.ok and isinstance(forex_pairs_result.data, list):
+    forex_pairs = forex_pairs_result.data
+else:
+    st.error(
+        format_api_error(
+            forex_pairs_result,
+            "Could not load Forex pair list. Using fallback.",
+        )
+    )
+    forex_pairs = FALLBACK_FOREX_PAIRS
 
 default_pair = "EURUSD" if "EURUSD" in forex_pairs else forex_pairs[0]
 selected_pair = st.selectbox(
@@ -36,7 +56,12 @@ if get_quote_button:
         st.warning("Please select a currency pair.")
     else:
         with st.spinner(f"Fetching quote for {selected_pair}..."):
-            quote_data_list = get_forex_quote(API_KEY, selected_pair)
+            quote_result = get_forex_quote(API_KEY, selected_pair)
+
+        if quote_result.ok and isinstance(quote_result.data, list):
+            quote_data_list = quote_result.data
+        else:
+            quote_data_list = None
 
         if quote_data_list:
             # API returns a list, take the first element
@@ -83,7 +108,12 @@ if get_quote_button:
                 st.json(quote_data)
 
         else:
-            st.error(f"Could not retrieve quote data for {selected_pair}.")
+            st.error(
+                format_api_error(
+                    quote_result,
+                    f"Could not retrieve quote data for {selected_pair}.",
+                )
+            )
 else:
     st.info("Select a currency pair and click 'Get Forex Quote'.")
 

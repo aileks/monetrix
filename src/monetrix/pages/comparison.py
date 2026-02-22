@@ -1,11 +1,11 @@
-import os
 import re
 
 import streamlit as st
 
-from monetrix.api_clients.fmp_client import get_multiple_stock_quotes
+from monetrix.api_clients.fmp_client import format_api_error, get_multiple_stock_quotes
+from monetrix.config import resolve_fmp_api_key
 
-API_KEY = os.getenv("FMP_API_KEY")
+API_KEY = resolve_fmp_api_key()
 
 COMMON_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JPM", "V"]
 MAX_COMPARE = 5  # Set a max limit for comparison
@@ -13,8 +13,8 @@ MAX_COMPARE = 5  # Set a max limit for comparison
 st.title("Stock Comparison")
 
 if not API_KEY:
-    st.error("Fatal Error: FMP_API_KEY not found in environment variables.")
-    st.info("Ensure .env file is in the project root with FMP_API_KEY='YOUR_KEY'")
+    st.error("Fatal Error: FMP_API_KEY not configured.")
+    st.info("Set Streamlit secret FMP_API_KEY (or fmp.api_key) or env var FMP_API_KEY.")
     st.stop()
 
 selected_common_symbols = st.multiselect(
@@ -53,14 +53,23 @@ if compare_button:
     elif len(final_symbols_list) > MAX_COMPARE:
         # Exceeded hard limit
         st.error(
-            f"Too many unique stocks selected ({len(final_symbols_list)}). Please limit your combined input to {MAX_COMPARE} unique stocks."
+            "Too many unique stocks selected "
+            f"({len(final_symbols_list)}). Please limit your combined input "
+            f"to {MAX_COMPARE} unique stocks."
         )
         valid_input = False
 
     if valid_input:
         symbols_to_fetch = final_symbols_list
         with st.spinner(f"Fetching data for {', '.join(symbols_to_fetch)}..."):
-            comparison_data = get_multiple_stock_quotes(API_KEY, symbols_to_fetch)
+            comparison_result = get_multiple_stock_quotes(API_KEY, symbols_to_fetch)
+
+        if comparison_result.ok:
+            comparison_data = (
+                comparison_result.data if isinstance(comparison_result.data, list) else []
+            )
+        else:
+            comparison_data = None
 
         if comparison_data:
             st.header("Comparison Metrics")
@@ -100,11 +109,14 @@ if compare_button:
                         st.subheader(symbol)
                         st.warning("Data not found.")
 
-        elif not comparison_data:
+        elif comparison_result.ok:
             st.info("No quote data returned for the selected symbols.")
         else:
             st.error(
-                f"Could not retrieve comparison data for {', '.join(symbols_to_fetch)}."
+                format_api_error(
+                    comparison_result,
+                    f"Could not retrieve comparison data for {', '.join(symbols_to_fetch)}.",
+                )
             )
 
 if not compare_button:

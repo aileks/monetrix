@@ -1,4 +1,3 @@
-import os
 from datetime import date, timedelta
 
 import pandas as pd
@@ -11,8 +10,9 @@ from monetrix.api_clients.fmp_client import (
     get_historical_price_data,
     get_technical_indicator,
 )
+from monetrix.config import resolve_fmp_api_key
 
-API_KEY = os.getenv("FMP_API_KEY")
+API_KEY = resolve_fmp_api_key()
 
 # Define a list of common tickers (same as in quote.py)
 COMMON_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JPM", "V"]
@@ -20,7 +20,12 @@ COMMON_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JPM"
 st.title("Historical Stock Data")
 
 
-def set_date_range(days: int = 0, weeks: int = 0, months: int = 0, years: int = 0):
+def set_date_range(
+    days: int = 0,
+    weeks: int = 0,
+    months: int = 0,
+    years: int = 0,
+) -> None:
     """Updates session state for start and end dates based on offset."""
     today = date.today()
     start_offset = timedelta(days=days, weeks=weeks)
@@ -44,7 +49,8 @@ if "hist_end_date" not in st.session_state:
     st.session_state.hist_end_date = today
 
 if not API_KEY:
-    st.error("Fatal Error: FMP_API_KEY not found.")
+    st.error("Fatal Error: FMP_API_KEY not configured.")
+    st.info("Set Streamlit secret FMP_API_KEY (or fmp.api_key) or env var FMP_API_KEY.")
     st.stop()
 
 st.sidebar.header("Input")
@@ -143,7 +149,9 @@ fetch_button_hist = st.sidebar.button("Get Data & Indicators", key="hist_fetch_b
 
 st.header(f"{symbol_input_hist}")
 st.caption(
-    f"Date Range: {st.session_state.hist_start_date.strftime('%Y-%m-%d')} to {st.session_state.hist_end_date.strftime('%Y-%m-%d')}"
+    "Date Range: "
+    f"{st.session_state.hist_start_date.strftime('%Y-%m-%d')} "
+    f"to {st.session_state.hist_end_date.strftime('%Y-%m-%d')}"
 )
 
 if fetch_button_hist:

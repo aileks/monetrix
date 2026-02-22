@@ -34,7 +34,7 @@ API.
    ```
 
 2. **Set up API Key:**
-    * Copy the `.env.example` file to `.env`:
+    * **Local development (`.env`):** copy the `.env.example` file to `.env`:
       ```bash
       cp src/.env.example src/.env
       ```
@@ -43,6 +43,14 @@ API.
       FMP_API_KEY='YOUR_FMP_API_KEY'
       ```
     * Replace `'YOUR_FMP_API_KEY'` with your actual key obtained from FMP.
+    * **Streamlit Cloud (`.streamlit/secrets.toml`):** set either flat or nested key:
+      ```toml
+      FMP_API_KEY = "YOUR_FMP_API_KEY"
+      ```
+      ```toml
+      [fmp]
+      api_key = "YOUR_FMP_API_KEY"
+      ```
 
 3. **Install Dependencies:**
     * Ensure you have Poetry installed ([refer to docs](https://python-poetry.org/docs/)).

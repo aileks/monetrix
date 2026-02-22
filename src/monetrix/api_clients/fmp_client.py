@@ -1,183 +1,349 @@
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date
-from typing import Any, Optional
+from typing import Literal
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import pandas as pd
 import requests
 import streamlit as st
 
+from monetrix.api_clients.fmp_parsers import (
+    extract_indicator_column,
+    normalize_forex_record,
+    normalize_historical_dataframe,
+    normalize_indicator_timeframe,
+    normalize_mover_record,
+    normalize_quote_record,
+    records_from_payload,
+)
 
-@st.cache_data(ttl=900)
-def get_stock_quote(symbol: str, api_key: str) -> dict[str, Any] | None:
-    """Fetches the stock quote for a given symbol from the FMP API."""
-    if not api_key:
-        print("Error: API key was not provided to get_stock_quote.")
-        return None
-    if not symbol:
-        print("Error: Stock symbol was not provided.")
+ErrorCategory = Literal[
+    "auth",
+    "rate_limit",
+    "not_found",
+    "upstream",
+    "network",
+    "decode",
+    "empty",
+    "invalid_input",
+    "config",
+]
+
+FMP_BASE_URL = "https://financialmodelingprep.com/stable"
+REQUEST_TIMEOUT_SECONDS = 10
+LEGACY_ENDPOINT_MARKER = "legacy endpoint"
+
+
+@dataclass
+class FMPResponse:
+    ok: bool
+    data: object | None = None
+    category: ErrorCategory | None = None
+    status_code: int | None = None
+    message: str = ""
+
+
+def _log(message: str) -> None:
+    print(f"[fmp_client] {message}")
+
+
+def _ok(data: object, status_code: int | None = None) -> FMPResponse:
+    return FMPResponse(ok=True, data=data, status_code=status_code)
+
+
+def _fail(
+    category: ErrorCategory,
+    message: str,
+    status_code: int | None = None,
+    data: object | None = None,
+) -> FMPResponse:
+    return FMPResponse(
+        ok=False,
+        data=data,
+        category=category,
+        status_code=status_code,
+        message=message,
+    )
+
+
+def _build_url(endpoint: str, api_key: str, **params: object) -> str:
+    query: dict[str, str] = {"apikey": api_key}
+    for key, value in params.items():
+        if value is None:
+            continue
+        query[key] = str(value)
+
+    encoded_query = urlencode(query)
+    normalized_endpoint = endpoint.lstrip("/")
+    return f"{FMP_BASE_URL}/{normalized_endpoint}?{encoded_query}"
+
+
+def _redact_api_key(url: str) -> str:
+    parsed = urlparse(url)
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    redacted_items = []
+    for key, value in query_items:
+        redacted_value = "***" if key.lower() == "apikey" else value
+        redacted_items.append((key, redacted_value))
+
+    redacted_query = urlencode(redacted_items)
+    return urlunparse(parsed._replace(query=redacted_query))
+
+
+def _status_to_category(status_code: int | None) -> ErrorCategory:
+    if status_code in {401, 403}:
+        return "auth"
+    if status_code == 429:
+        return "rate_limit"
+    if status_code == 404:
+        return "not_found"
+    return "upstream"
+
+
+def _extract_api_error_message(payload: object) -> str | None:
+    if not isinstance(payload, dict):
         return None
 
-    url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={api_key}"
+    for key in ("Error Message", "error", "message"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return None
+
+
+def _message_to_category(message: str) -> ErrorCategory:
+    normalized = message.lower()
+    if LEGACY_ENDPOINT_MARKER in normalized:
+        return "auth"
+    if "invalid api key" in normalized or "unauthorized" in normalized:
+        return "auth"
+    if "rate limit" in normalized:
+        return "rate_limit"
+    if "not found" in normalized:
+        return "not_found"
+    return "upstream"
+
+
+def _request_json(url: str) -> FMPResponse:
+    redacted_url = _redact_api_key(url)
 
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+        response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+    except requests.exceptions.RequestException as exc:
+        _log(f"network error url={redacted_url}: {exc}")
+        return _fail(
+            "network",
+            "Network error while contacting market data provider.",
+        )
 
-        # FMP often returns a list, even for a single quote
-        if isinstance(data, list) and len(data) > 0:
-            return data[0]
-        elif isinstance(data, dict):
-            return data  # Handle cases where it might return a dict directly
-        else:
-            # Log unexpected format, return None
-            print(f"Warning: Unexpected response format for {symbol}: {data}")
-            return None
+    status_code = response.status_code
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching data for {symbol}: {e}")
-        return None
+    try:
+        payload = response.json()
     except json.JSONDecodeError:
-        print(f"Error decoding JSON response for {symbol}.")
-        print(f"Response text: {response.text}")  # type: ignore
-        return None
+        _log(f"json decode error status={status_code} url={redacted_url}")
+        return _fail(
+            "decode",
+            "Received invalid JSON from market data provider.",
+            status_code=status_code,
+        )
+
+    provider_error = _extract_api_error_message(payload)
+    if status_code >= 400 or provider_error:
+        category = _status_to_category(status_code)
+        if provider_error and category == "upstream":
+            category = _message_to_category(provider_error)
+
+        message = provider_error or "Request to market data provider failed."
+        _log(
+            f"api error category={category} status={status_code} "
+            f"url={redacted_url} message={message}"
+        )
+        return _fail(
+            category,
+            message,
+            status_code=status_code,
+            data=payload,
+        )
+
+    return _ok(payload, status_code=status_code)
+
+
+def format_api_error(result: FMPResponse, fallback: str) -> str:
+    if result.ok:
+        return fallback
+
+    legacy_auth_error = (
+        result.category == "auth" and LEGACY_ENDPOINT_MARKER in result.message.lower()
+    )
+
+    category_messages: dict[str, str] = {
+        "auth": "Market data API key is invalid or unauthorized.",
+        "rate_limit": "Market data API limit reached. Try again shortly.",
+        "not_found": "Requested market data endpoint was not found.",
+        "network": "Network error while reaching the market data provider.",
+        "decode": "Market data provider returned an invalid response format.",
+        "empty": "No market data returned for this request.",
+        "invalid_input": "Invalid input for market data request.",
+        "config": "Market data API key is missing or invalidly configured.",
+        "upstream": fallback,
+    }
+
+    if legacy_auth_error:
+        message = (
+            "Market data API key is unauthorized for legacy endpoints. "
+            "Use stable endpoint routes and verify deployed version."
+        )
+    else:
+        message = category_messages.get(result.category or "", fallback)
+
+    hints: list[str] = []
+    if result.status_code is not None:
+        hints.append(f"status {result.status_code}")
+
+    if result.message:
+        detail = " ".join(result.message.split())
+        hints.append(detail[:140])
+
+    if hints:
+        return f"{message} ({'; '.join(hints)})"
+
+    return message
+
+
+@st.cache_data(ttl=900)
+def get_stock_quote(symbol: str, api_key: str) -> FMPResponse:
+    """Fetches the stock quote for a given symbol from the FMP API."""
+    if not api_key:
+        _log("missing API key for get_stock_quote")
+        return _fail("config", "API key was not provided.")
+
+    normalized_symbol = symbol.strip().upper()
+    if not normalized_symbol:
+        _log("missing stock symbol for get_stock_quote")
+        return _fail("invalid_input", "Stock symbol was not provided.")
+
+    url = _build_url("quote", api_key, symbol=normalized_symbol)
+    response = _request_json(url)
+    if not response.ok:
+        return response
+
+    records = records_from_payload(response.data)
+    if records is None:
+        if isinstance(response.data, Mapping):
+            return _ok(normalize_quote_record(response.data), status_code=response.status_code)
+
+        _log(f"unexpected quote response symbol={normalized_symbol} payload={response.data}")
+        return _fail(
+            "upstream",
+            f"Unexpected response format for quote {normalized_symbol}.",
+            status_code=response.status_code,
+            data=response.data,
+        )
+
+    if not records:
+        return _fail(
+            "empty",
+            f"No quote data returned for {normalized_symbol}.",
+            status_code=response.status_code,
+        )
+
+    return _ok(normalize_quote_record(records[0]), status_code=response.status_code)
 
 
 @st.cache_data(ttl=3600)
 def get_historical_price_data(
-    symbol: str, api_key: str, start_date: date, end_date: date
-) -> Optional[pd.DataFrame | pd.Series]:
+    symbol: str,
+    api_key: str,
+    start_date: date,
+    end_date: date,
+) -> pd.DataFrame | pd.Series | None:
     """Fetches historical daily price data from FMP API for a given date range."""
     if not api_key:
-        print("Error: API key was not provided for historical data.")
-        return None
-    if not symbol:
-        print("Error: Stock symbol was not provided for historical data.")
+        _log("missing API key for get_historical_price_data")
         return None
 
-    start_date_str = start_date.strftime("%Y-%m-%d")
-    end_date_str = end_date.strftime("%Y-%m-%d")
-
-    url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}?from={start_date_str}&to={end_date_str}&apikey={api_key}"
-    print(f"Requesting URL: {url}")
-
-    try:
-        print(
-            f"Cache miss/fetch: Historical data for {symbol} ({start_date_str} to {end_date_str})"
-        )
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
-
-        if (
-            isinstance(data, dict)
-            and "historical" in data
-            and isinstance(data["historical"], list)
-        ):
-            if not data["historical"]:
-                # Return empty DataFrame instead of None, easier to handle in UI
-                return pd.DataFrame()
-
-            df = pd.DataFrame(data["historical"])
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.set_index("date")
-            df = df.sort_index()
-
-            # Ensure standard columns exist, fill missing numerics with 0
-            for col in ["open", "high", "low", "close", "volume"]:
-                if col not in df.columns:
-                    df[col] = 0
-
-            # Reorder columns
-            df = df[
-                ["open", "high", "low", "close", "volume"]
-                + [
-                    c
-                    for c in df.columns
-                    if c not in ["open", "high", "low", "close", "volume"]
-                ]
-            ]
-
-            return df
-        else:
-            print(f"Unexpected historical data format for {symbol}: {data}")
-            return None
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching historical data for {symbol}: {e}")
-        try:
-            print(f"API Error Response: {response.text}")  # type: ignore
-        except:  # noqa: E722
-            pass  # Ignore if response object doesn't exist
+    normalized_symbol = symbol.strip().upper()
+    if not normalized_symbol:
+        _log("missing stock symbol for get_historical_price_data")
         return None
-    except json.JSONDecodeError:
-        print(
-            f"Error decoding historical JSON for {symbol}. Response: {response.text}"  # type: ignore
+
+    url = _build_url("historical-price-eod/full", api_key, symbol=normalized_symbol)
+    response = _request_json(url)
+    if not response.ok:
+        _log(
+            f"historical request failed symbol={normalized_symbol} "
+            f"category={response.category} status={response.status_code}"
         )
         return None
-    except Exception as e:
-        print(f"Error processing historical data for {symbol}: {e}")
+
+    records = records_from_payload(response.data)
+    if records is None:
+        _log(f"unexpected historical response symbol={normalized_symbol}: {response.data}")
         return None
+
+    return normalize_historical_dataframe(
+        records,
+        start_date=start_date,
+        end_date=end_date,
+        symbol=normalized_symbol,
+        on_error=_log,
+    )
 
 
 @st.cache_data(ttl=600)
-def get_market_winners(api_key: str) -> list[dict[str, Any]] | None:
+def get_market_winners(api_key: str) -> FMPResponse:
     """Fetches the top stock market gainers from the FMP API."""
     if not api_key:
-        print("Error: API key was not provided for market gainers.")
-        return None
+        _log("missing API key for get_market_winners")
+        return _fail("config", "API key was not provided for market gainers.")
 
-    url = f"https://financialmodelingprep.com/api/v3/stock_market/gainers?apikey={api_key}"
+    url = _build_url("biggest-gainers", api_key)
+    response = _request_json(url)
+    if not response.ok:
+        return response
 
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+    records = records_from_payload(response.data)
+    if records is None:
+        _log(f"unexpected gainers response payload={response.data}")
+        return _fail(
+            "upstream",
+            "Unexpected response format for market gainers.",
+            status_code=response.status_code,
+            data=response.data,
+        )
 
-        if isinstance(data, list):
-            return data
-        else:
-            print(f"Warning: Unexpected response format for market gainers: {data}")
-            return None
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching market gainers: {e}")
-        return None
-    except json.JSONDecodeError:
-        print("Error decoding JSON response for market gainers.")
-        print(f"Response text: {response.text}")  # type: ignore
-        return None
+    normalized = [normalize_mover_record(record) for record in records]
+    return _ok(normalized, status_code=response.status_code)
 
 
-@st.cache_data(ttl=600)  # Cache for 10 minutes
-def get_market_losers(api_key: str) -> list[dict[str, Any]] | None:
+@st.cache_data(ttl=600)
+def get_market_losers(api_key: str) -> FMPResponse:
     """Fetches the top stock market losers from the FMP API."""
     if not api_key:
-        print("Error: API key was not provided for market losers.")
-        return None
+        _log("missing API key for get_market_losers")
+        return _fail("config", "API key was not provided for market losers.")
 
-    url = (
-        f"https://financialmodelingprep.com/api/v3/stock_market/losers?apikey={api_key}"
-    )
+    url = _build_url("biggest-losers", api_key)
+    response = _request_json(url)
+    if not response.ok:
+        return response
 
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+    records = records_from_payload(response.data)
+    if records is None:
+        _log(f"unexpected losers response payload={response.data}")
+        return _fail(
+            "upstream",
+            "Unexpected response format for market losers.",
+            status_code=response.status_code,
+            data=response.data,
+        )
 
-        if isinstance(data, list):
-            return data
-        else:
-            print(f"Warning: Unexpected response format for market losers: {data}")
-            return None
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching market losers: {e}")
-        return None
-    except json.JSONDecodeError:
-        print("Error decoding JSON response for market losers.")
-        print(f"Response text: {response.text}")  # type: ignore
-        return None
+    normalized = [normalize_mover_record(record) for record in records]
+    return _ok(normalized, status_code=response.status_code)
 
 
 @st.cache_data(ttl=3600)
@@ -185,220 +351,183 @@ def get_technical_indicator(
     api_key: str,
     symbol: str,
     period: int,
-    indicator_type: str,  # 'sma', 'ema', 'rsi', etc.
-    timeframe: str = "daily",  # FMP also supports intraday like '1min', '5min', '1hour', etc.
-) -> Optional[pd.Series | pd.DataFrame]:
-    """Fetches specified technical indicator data from FMP API."""
-    if not all([api_key, symbol, period, indicator_type]):
-        print("Error: Missing required parameters for get_technical_indicator.")
+    indicator_type: str,
+    timeframe: str = "daily",
+) -> pd.Series | pd.DataFrame | None:
+    """Fetches technical indicator data from FMP API."""
+    if not api_key or not symbol or period <= 0 or not indicator_type:
+        _log("missing required parameters for get_technical_indicator")
         return None
 
-    api_timeframe = timeframe if timeframe != "1day" else "daily"
-    url = f"https://financialmodelingprep.com/api/v3/technical_indicator/{api_timeframe}/{symbol}?period={period}&type={indicator_type}&apikey={api_key}"
+    normalized_symbol = symbol.strip().upper()
+    indicator_key = indicator_type.strip().lower()
+    normalized_timeframe = normalize_indicator_timeframe(timeframe)
 
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+    url = _build_url(
+        f"technical-indicators/{indicator_key}",
+        api_key,
+        symbol=normalized_symbol,
+        periodLength=period,
+        timeframe=normalized_timeframe,
+    )
 
-        if isinstance(data, list) and len(data) > 0:
-            df = pd.DataFrame(data)
-            # Ensure 'date' column exists
-            if "date" not in df.columns:
-                print(
-                    f"Error: 'date' column missing in indicator response for {symbol} {indicator_type}"
-                )
-                return None
-
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.set_index("date")
-            df = df.sort_index()
-
-            # Find the indicator column (could be 'sma', 'ema', 'rsi')
-            indicator_col_name = indicator_type.lower()
-            if indicator_col_name not in df.columns:
-                # Sometimes the column name matches the type exactly
-                if indicator_type in df.columns:
-                    indicator_col_name = indicator_type
-                else:  # Try finding the first column that isn't date/open/high/low/close/volume if name mismatch
-                    potential_cols = [
-                        c
-                        for c in df.columns
-                        if c not in ["open", "high", "low", "close", "volume"]
-                    ]
-                    if potential_cols:
-                        indicator_col_name = potential_cols[0]
-                    else:
-                        print(
-                            f"Error: Indicator column ('{indicator_type.lower()}') not found in response for {symbol}"
-                        )
-                        return None
-
-            return df[indicator_col_name]
-        elif isinstance(data, list) and len(data) == 0:
-            print(
-                f"No indicator data returned for {symbol} {indicator_type} period {period}"
-            )
-            return None  # Return None for empty list
-        else:
-            print(
-                f"Warning: Unexpected response format for {symbol} indicator {indicator_type}: {data}"
-            )
-            return None
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching indicator {indicator_type} for {symbol}: {e}")
-        try:
-            print(f"API Error Response: {response.text}")  # type: ignore
-        except:  # noqa: E722
-            pass
+    response = _request_json(url)
+    if not response.ok:
+        _log(
+            f"indicator request failed symbol={normalized_symbol} indicator={indicator_key} "
+            f"category={response.category} status={response.status_code}"
+        )
         return None
-    except json.JSONDecodeError:
-        print(f"Error decoding indicator JSON for {symbol} {indicator_type}. Response: {response.text}")  # type: ignore
+
+    records = records_from_payload(response.data)
+    if records is None:
+        _log(
+            f"unexpected indicator response symbol={normalized_symbol} "
+            f"indicator={indicator_key}: {response.data}"
+        )
         return None
-    except Exception as e:
-        print(f"Error processing indicator data for {symbol} {indicator_type}: {e}")
+
+    if not records:
+        _log(
+            f"empty indicator response symbol={normalized_symbol} "
+            f"indicator={indicator_key} period={period}"
+        )
         return None
+
+    df = pd.DataFrame(records)
+    if "date" not in df.columns:
+        _log(
+            f"indicator response missing date symbol={normalized_symbol} "
+            f"indicator={indicator_key}"
+        )
+        return None
+
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date")
+    df = df.sort_index()
+
+    indicator_column = extract_indicator_column(df, indicator_key)
+    if indicator_column is None:
+        _log(
+            f"indicator column missing symbol={normalized_symbol} "
+            f"indicator={indicator_key}"
+        )
+        return None
+
+    return df[indicator_column]
 
 
 @st.cache_data(ttl=600)
-def get_multiple_stock_quotes(
-    api_key: str, symbols: list[str]
-) -> list[dict[str, Any]] | None:
+def get_multiple_stock_quotes(api_key: str, symbols: list[str]) -> FMPResponse:
     """Fetches stock quotes for multiple symbols in a single API call."""
     if not api_key:
-        print("Error: API key not provided for multiple quotes.")
-        return None
-    if not symbols:
-        print("Error: No symbols provided for multiple quotes.")
-        return []  # Return empty list if no symbols given
+        _log("missing API key for get_multiple_stock_quotes")
+        return _fail("config", "API key not provided for multiple quotes.")
 
-    # Join symbols into comma-separated string
-    symbols_str = ",".join(symbols).upper()
-    url = (
-        f"https://financialmodelingprep.com/api/v3/quote/{symbols_str}?apikey={api_key}"
-    )
+    normalized_symbols = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
+    if not normalized_symbols:
+        return _ok([])
 
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+    symbols_str = ",".join(normalized_symbols)
+    url = _build_url("batch-quote", api_key, symbols=symbols_str)
 
-        # Expecting a list of quote objects
-        if isinstance(data, list):
-            return data
-        else:
-            print(
-                f"Warning: Unexpected response format for multiple quotes ({symbols_str}): {data}"
-            )
+    response = _request_json(url)
+    if not response.ok:
+        return response
 
-            # If it returns a single dict for a single symbol, wrap it in a list
-            if isinstance(data, dict) and len(symbols) == 1:
-                return [data]
-            return None
+    records = records_from_payload(response.data)
+    if records is None:
+        _log(f"unexpected multiple quote response symbols={symbols_str}: {response.data}")
+        return _fail(
+            "upstream",
+            f"Unexpected response format for quotes {symbols_str}.",
+            status_code=response.status_code,
+            data=response.data,
+        )
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching multiple quotes for {symbols_str}: {e}")
-        try:
-            print(f"API Error Response: {response.text}")  # type: ignore
-        except:  # noqa: E722
-            pass
-        return None
-    except json.JSONDecodeError:
-        print(f"Error decoding multiple quotes JSON for {symbols_str}. Response: {response.text}")  # type: ignore
-        return None
-    except Exception as e:
-        print(f"Error processing multiple quotes data for {symbols_str}: {e}")
-        return None
+    normalized = [normalize_quote_record(record) for record in records]
+    return _ok(normalized, status_code=response.status_code)
 
 
 @st.cache_data(ttl=3600)
-def get_forex_pairs_list(api_key: str) -> list[str] | None:
-    """Fetches the list of available Forex currency pairs from FMP API."""
+def get_forex_pairs_list(api_key: str) -> FMPResponse:
+    """Fetches available Forex currency pairs from FMP API."""
     if not api_key:
-        print("Error: API key not provided for Forex pairs list.")
-        return None
+        _log("missing API key for get_forex_pairs_list")
+        return _fail("config", "API key not provided for Forex pairs list.")
 
-    url = f"https://financialmodelingprep.com/api/v3/symbol/available-forex-currency-pairs?apikey={api_key}"
+    url = _build_url("forex-list", api_key)
+    response = _request_json(url)
+    if not response.ok:
+        return response
 
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+    if isinstance(response.data, list) and all(isinstance(item, str) for item in response.data):
+        return _ok(sorted(response.data), status_code=response.status_code)
 
-        if (
-            isinstance(data, dict)
-            and "symbolsList" in data
-            and isinstance(data["symbolsList"], list)
-        ):
-            pairs = [
-                item.get("symbol") for item in data["symbolsList"] if item.get("symbol")
-            ]
-            return sorted(pairs)  # Return sorted list of symbols
-        # Handle alternative structure if API returns just a list of strings
-        elif isinstance(data, list) and all(isinstance(item, str) for item in data):
-            return sorted(data)
-        else:
-            print(f"Warning: Unexpected response format for Forex pairs list: {data}")
-            # Fallback if API is unavailable or format is wrong
-            return [
-                "EURUSD",
-                "USDJPY",
-                "GBPUSD",
-                "AUDUSD",
-                "USDCAD",
-                "USDCHF",
-                "NZDUSD",
-            ]
+    records = records_from_payload(response.data)
+    if records is None:
+        _log(f"unexpected forex pairs response payload={response.data}")
+        return _fail(
+            "upstream",
+            "Unexpected response format for Forex pairs list.",
+            status_code=response.status_code,
+            data=response.data,
+        )
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching Forex pairs list: {e}")
-        return ["EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
-    except json.JSONDecodeError:
-        print(f"Error decoding JSON for Forex pairs list. Response: {response.text}")  # type: ignore
-        return ["EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
-    except Exception as e:
-        print(f"Generic error processing Forex pairs list: {e}")
-        return ["EURUSD", "USDJPY", "GBPUSD", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
+    pairs: list[str] = []
+    for record in records:
+        for key in ("symbol", "ticker", "currencyPair", "pair"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                pairs.append(value.strip().upper())
+                break
+
+    unique_pairs = sorted(set(pairs))
+    if unique_pairs:
+        return _ok(unique_pairs, status_code=response.status_code)
+
+    _log(f"unable to parse forex pairs from payload={response.data}")
+    return _fail(
+        "upstream",
+        "Could not parse Forex pair list from provider response.",
+        status_code=response.status_code,
+        data=response.data,
+    )
 
 
 @st.cache_data(ttl=60)
-def get_forex_quote(api_key: str, pair: str) -> list[dict[str, Any]] | None:
-    """Fetches the latest quote for a specific Forex pair using the /api/v3/fx/ endpoint."""
+def get_forex_quote(api_key: str, pair: str) -> FMPResponse:
+    """Fetches the latest quote for a specific Forex pair."""
     if not api_key:
-        print("Error: API key not provided for Forex quote.")
-        return None
-    if not pair:
-        print("Error: Forex pair not provided.")
-        return None
+        _log("missing API key for get_forex_quote")
+        return _fail("config", "API key not provided for Forex quote.")
 
-    url = f"https://financialmodelingprep.com/api/v3/fx/{pair}?apikey={api_key}"
+    normalized_pair = pair.strip().upper()
+    if not normalized_pair:
+        _log("missing pair for get_forex_quote")
+        return _fail("invalid_input", "Forex pair was not provided.")
 
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+    url = _build_url("quote", api_key, symbol=normalized_pair)
+    response = _request_json(url)
+    if not response.ok:
+        return response
 
-        # Expecting a list containing one quote dictionary
-        if isinstance(data, list) and len(data) > 0:
-            return data
-        elif isinstance(data, list) and len(data) == 0:
-            print(f"Empty list returned for Forex quote {pair}")
-            return None
-        else:
-            print(f"Warning: Unexpected response format for Forex quote {pair}: {data}")
-            return None
+    records = records_from_payload(response.data)
+    if records is None:
+        _log(f"unexpected forex quote response pair={normalized_pair} payload={response.data}")
+        return _fail(
+            "upstream",
+            f"Unexpected response format for Forex quote {normalized_pair}.",
+            status_code=response.status_code,
+            data=response.data,
+        )
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching Forex quote for {pair}: {e}")
-        try:
-            print(f"API Error Response: {response.text}")  # type: ignore
-        except:
-            pass
-        return None
-    except json.JSONDecodeError:
-        print(f"Error decoding Forex quote JSON for {pair}. Response: {response.text}")  # type: ignore
-        return None
-    except Exception as e:
-        print(f"Error processing Forex quote data for {pair}: {e}")
-        return None
+    if not records:
+        return _fail(
+            "empty",
+            f"No Forex quote data returned for {normalized_pair}.",
+            status_code=response.status_code,
+        )
+
+    normalized = [normalize_forex_record(record, normalized_pair) for record in records]
+    return _ok(normalized, status_code=response.status_code)

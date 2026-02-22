@@ -1,10 +1,9 @@
-import os
-
 import streamlit as st
 
-from monetrix.api_clients.fmp_client import get_stock_quote
+from monetrix.api_clients.fmp_client import format_api_error, get_stock_quote
+from monetrix.config import resolve_fmp_api_key
 
-API_KEY = os.getenv("FMP_API_KEY")
+API_KEY = resolve_fmp_api_key()
 
 # Define a list of common tickers
 COMMON_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JPM", "V"]
@@ -12,8 +11,8 @@ COMMON_TICKERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "JPM"
 st.title("Stock Quote")
 
 if not API_KEY:
-    st.error("Fatal Error: FMP_API_KEY not found in environment variables.")
-    st.info("Ensure .env file is in the project root with FMP_API_KEY='YOUR_KEY'")
+    st.error("Fatal Error: FMP_API_KEY not configured.")
+    st.info("Set Streamlit secret FMP_API_KEY (or fmp.api_key) or env var FMP_API_KEY.")
     st.stop()
 
 st.sidebar.header("Quote Input")
@@ -38,9 +37,10 @@ if fetch_button:
         st.warning("Please select or enter a stock symbol.")
     else:
         with st.spinner(f"Fetching quote for {symbol_to_use}..."):
-            quote_data = get_stock_quote(symbol_to_use, API_KEY)  #
+            quote_result = get_stock_quote(symbol_to_use, API_KEY)
 
-        if quote_data:
+        if quote_result.ok and isinstance(quote_result.data, dict):
+            quote_data = quote_result.data
             price_col, pe_col, low_col, high_col, vol_col = st.columns(5)
 
             # Extract data with .get() for safety
@@ -82,7 +82,11 @@ if fetch_button:
                 st.json(quote_data)
         else:
             st.error(
-                f"Could not retrieve quote data for {symbol_to_use}. Check symbol or API limits."
+                format_api_error(
+                    quote_result,
+                    "Could not retrieve quote data for "
+                    f"{symbol_to_use}. Check symbol or API limits.",
+                )
             )
 else:
     st.info("Select a stock symbol and click 'Get Quote'.")
