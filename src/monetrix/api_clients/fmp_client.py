@@ -21,6 +21,7 @@ from monetrix.api_clients.fmp_parsers import (
 
 ErrorCategory = Literal[
     "auth",
+    "plan",
     "rate_limit",
     "not_found",
     "upstream",
@@ -93,6 +94,8 @@ def _redact_api_key(url: str) -> str:
 
 
 def _status_to_category(status_code: int | None) -> ErrorCategory:
+    if status_code == 402:
+        return "plan"
     if status_code in {401, 403}:
         return "auth"
     if status_code == 429:
@@ -118,6 +121,8 @@ def _message_to_category(message: str) -> ErrorCategory:
     normalized = message.lower()
     if LEGACY_ENDPOINT_MARKER in normalized:
         return "auth"
+    if "subscription" in normalized or "upgrade" in normalized:
+        return "plan"
     if "invalid api key" in normalized or "unauthorized" in normalized:
         return "auth"
     if "rate limit" in normalized:
@@ -144,10 +149,32 @@ def _request_json(url: str) -> FMPResponse:
     try:
         payload = response.json()
     except json.JSONDecodeError:
-        _log(f"json decode error status={status_code} url={redacted_url}")
+        body_snippet = " ".join(response.text.split())[:220]
+        _log(
+            "json decode error "
+            f"status={status_code} url={redacted_url} body={body_snippet}"
+        )
+
+        category = "decode"
+        message = "Received invalid JSON from market data provider."
+        append_body_snippet = bool(body_snippet)
+        if status_code >= 400:
+            category = _status_to_category(status_code)
+            if status_code == 402:
+                message = (
+                    "Technical indicators require a higher FMP subscription tier."
+                )
+                append_body_snippet = False
+            elif body_snippet:
+                message = body_snippet
+                append_body_snippet = False
+
+        if append_body_snippet:
+            message = f"{message} {body_snippet}".strip()
+
         return _fail(
-            "decode",
-            "Received invalid JSON from market data provider.",
+            category,
+            message,
             status_code=status_code,
         )
 
@@ -182,6 +209,7 @@ def format_api_error(result: FMPResponse, fallback: str) -> str:
 
     category_messages: dict[str, str] = {
         "auth": "Market data API key is invalid or unauthorized.",
+        "plan": "Market data endpoint requires a higher FMP subscription tier.",
         "rate_limit": "Market data API limit reached. Try again shortly.",
         "not_found": "Requested market data endpoint was not found.",
         "network": "Network error while reaching the market data provider.",
@@ -347,17 +375,17 @@ def get_market_losers(api_key: str) -> FMPResponse:
 
 
 @st.cache_data(ttl=3600)
-def get_technical_indicator(
+def get_technical_indicator_result(
     api_key: str,
     symbol: str,
     period: int,
     indicator_type: str,
     timeframe: str = "daily",
-) -> pd.Series | pd.DataFrame | None:
+) -> FMPResponse:
     """Fetches technical indicator data from FMP API."""
     if not api_key or not symbol or period <= 0 or not indicator_type:
         _log("missing required parameters for get_technical_indicator")
-        return None
+        return _fail("invalid_input", "Missing required parameters for indicator request.")
 
     normalized_symbol = symbol.strip().upper()
     indicator_key = indicator_type.strip().lower()
@@ -372,12 +400,24 @@ def get_technical_indicator(
     )
 
     response = _request_json(url)
+    if not response.ok and response.category in {"not_found", "upstream"}:
+        fallback_url = _build_url(
+            f"technical-indicators/{indicator_key}",
+            api_key,
+            symbol=normalized_symbol,
+            period=period,
+            timeframe=normalized_timeframe,
+        )
+        fallback_response = _request_json(fallback_url)
+        if fallback_response.ok:
+            response = fallback_response
+
     if not response.ok:
         _log(
             f"indicator request failed symbol={normalized_symbol} indicator={indicator_key} "
             f"category={response.category} status={response.status_code}"
         )
-        return None
+        return response
 
     records = records_from_payload(response.data)
     if records is None:
@@ -385,14 +425,23 @@ def get_technical_indicator(
             f"unexpected indicator response symbol={normalized_symbol} "
             f"indicator={indicator_key}: {response.data}"
         )
-        return None
+        return _fail(
+            "upstream",
+            f"Unexpected response format for indicator {indicator_key}.",
+            status_code=response.status_code,
+            data=response.data,
+        )
 
     if not records:
         _log(
             f"empty indicator response symbol={normalized_symbol} "
             f"indicator={indicator_key} period={period}"
         )
-        return None
+        return _fail(
+            "empty",
+            f"No data returned for indicator {indicator_key} period {period}.",
+            status_code=response.status_code,
+        )
 
     df = pd.DataFrame(records)
     if "date" not in df.columns:
@@ -400,7 +449,12 @@ def get_technical_indicator(
             f"indicator response missing date symbol={normalized_symbol} "
             f"indicator={indicator_key}"
         )
-        return None
+        return _fail(
+            "upstream",
+            f"Indicator response missing date column for {indicator_key}.",
+            status_code=response.status_code,
+            data=response.data,
+        )
 
     df["date"] = pd.to_datetime(df["date"])
     df = df.set_index("date")
@@ -412,9 +466,35 @@ def get_technical_indicator(
             f"indicator column missing symbol={normalized_symbol} "
             f"indicator={indicator_key}"
         )
-        return None
+        return _fail(
+            "upstream",
+            f"Indicator column missing for {indicator_key}.",
+            status_code=response.status_code,
+            data=response.data,
+        )
 
-    return df[indicator_column]
+    return _ok(df[indicator_column], status_code=response.status_code)
+
+
+@st.cache_data(ttl=3600)
+def get_technical_indicator(
+    api_key: str,
+    symbol: str,
+    period: int,
+    indicator_type: str,
+    timeframe: str = "daily",
+) -> pd.Series | pd.DataFrame | None:
+    """Backwards-compatible wrapper for indicator series data."""
+    result = get_technical_indicator_result(
+        api_key,
+        symbol,
+        period,
+        indicator_type,
+        timeframe,
+    )
+    if result.ok and isinstance(result.data, (pd.Series, pd.DataFrame)):
+        return result.data
+    return None
 
 
 @st.cache_data(ttl=600)

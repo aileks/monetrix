@@ -5,23 +5,59 @@ from typing import cast
 import pandas as pd
 
 
+def _records_from_list(items: list[object]) -> list[dict[str, object]]:
+    records: list[dict[str, object]] = []
+    for item in items:
+        if isinstance(item, dict):
+            records.append(dict(item))
+    return records
+
+
+def _records_from_mapping_keys(
+    payload: Mapping[str, object],
+    keys: tuple[str, ...],
+) -> list[dict[str, object]] | None:
+    for key in keys:
+        candidate = payload.get(key)
+        if isinstance(candidate, list):
+            return _records_from_list(candidate)
+
+    return None
+
+
+def _first_nested_records(payload: Mapping[str, object]) -> list[dict[str, object]] | None:
+    for value in payload.values():
+        if not isinstance(value, list):
+            continue
+        records = _records_from_list(value)
+        if records:
+            return records
+
+    return None
+
+
 def records_from_payload(payload: object) -> list[dict[str, object]] | None:
     if isinstance(payload, list):
-        records: list[dict[str, object]] = []
-        for item in payload:
-            if isinstance(item, dict):
-                records.append(dict(item))
-        return records
+        return _records_from_list(payload)
 
     if isinstance(payload, Mapping):
-        for key in ("data", "results", "quotes", "historical", "symbolsList"):
-            candidate = payload.get(key)
-            if isinstance(candidate, list):
-                records: list[dict[str, object]] = []
-                for item in candidate:
-                    if isinstance(item, dict):
-                        records.append(dict(item))
-                return records
+        preferred = _records_from_mapping_keys(
+            payload,
+            (
+                "data",
+                "results",
+                "quotes",
+                "historical",
+                "symbolsList",
+                "technicalIndicator",
+                "technicalIndicators",
+                "indicators",
+                "values",
+            ),
+        )
+        if preferred is not None:
+            return preferred
+        return _first_nested_records(payload)
 
     return None
 

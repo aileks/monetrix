@@ -6,11 +6,9 @@ import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
 
-from monetrix.api_clients.fmp_client import (
-    get_historical_price_data,
-    get_technical_indicator,
-)
+from monetrix.api_clients.fmp_client import get_historical_price_data
 from monetrix.config import resolve_fmp_api_key
+from monetrix.indicators import compute_indicator_from_dataframe
 
 API_KEY = resolve_fmp_api_key()
 
@@ -169,10 +167,9 @@ if fetch_button_hist:
                 symbol_input_hist, API_KEY, current_start, current_end
             )
 
-        if hist_data is not None and not hist_data.empty:
+        if isinstance(hist_data, pd.DataFrame) and not hist_data.empty:
             # Fetch selected indicators
             indicator_series_map = {}
-            fetch_errors = []
             if selected_indicators:
                 with st.spinner(
                     f"Fetching selected indicators for {symbol_input_hist}..."
@@ -181,22 +178,17 @@ if fetch_button_hist:
                         period = indicator_periods.get(indicator)
                         if period:
                             indicator_name = f"{indicator}_{period}"
-                            # Fetch data using the new function
-                            series = get_technical_indicator(
-                                API_KEY,
-                                symbol_input_hist,
+                            series = compute_indicator_from_dataframe(
+                                hist_data,
+                                indicator,
                                 period,
-                                indicator.lower(),
                             )
                             if series is not None:
                                 # Only keep data within the selected date range
                                 series = series[current_start:current_end]  # type: ignore
                                 indicator_series_map[indicator_name] = series
                             else:
-                                fetch_errors.append(indicator_name)
-                                st.warning(
-                                    f"Could not fetch data for {indicator_name}."
-                                )
+                                st.warning(f"Could not compute data for {indicator_name}.")
                         else:
                             st.warning(f"Period not defined for {indicator}, skipping.")
 
@@ -317,7 +309,7 @@ if fetch_button_hist:
             with st.expander("View Table"):
                 st.dataframe(merged_data)
 
-        elif hist_data is not None and hist_data.empty:
+        elif isinstance(hist_data, pd.DataFrame) and hist_data.empty:
             st.warning(
                 f"No historical data returned for {symbol_input_hist} in the selected date range."
             )

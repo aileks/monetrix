@@ -88,7 +88,8 @@ current price, P/E ratio, day high/low, and volume.
 View historical price charts with the following options:
 
 - Select from preset date ranges (1M, 6M, YTD, 1Y, 5Y, 10Y) or choose custom dates
-- Add technical indicators (SMA, EMA, RSI) with customizable periods
+- Add technical indicators (SMA, EMA, RSI) with customizable periods, computed locally from
+  historical close prices
 - Interactive charts with zoom and hover details
 
 ### Market Trends
